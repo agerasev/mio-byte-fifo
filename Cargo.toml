@@ -1,0 +1,17 @@
+[package]
+name = "mio-byte-fifo"
+version = "0.1.0"
+authors = ["Alexey Gerasev <alexey.gerasev@gmail.com>"]
+description = "Concurrent non-blocking byte SPSC FIFO buffer intended for use in Mio poll"
+documentation = "https://docs.rs/mio-byte-fifo"
+homepage = "https://github.com/nthend/mio-byte-fifo"
+repository = "https://github.com/nthend/mio-byte-fifo.git"
+readme = "README.md"
+keywords = ["non-blocking", "bytes", "fifo", "buffer", "mio", "poll"]
+categories = ["asynchronous", "concurrency", "data-structures"]
+license = "MIT/Apache-2.0"
+
+[dependencies]
+mio = "0.6"
+mio-extras = "2.0"
+rb = "0.3"
