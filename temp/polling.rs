@@ -1,14 +1,14 @@
 extern crate mio;
 extern crate mio_byte_fifo;
 
-use std::io::{Read, Write};
+use std::io::{Read, Write, ErrorKind};
 use std::thread;
 
 use mio::{Poll, Events, Token, Ready, PollOpt};
 
 
 fn main() {
-    let (mut p, mut c) = create(4);
+    let (mut p, mut c) = mio_byte_fifo::create(4);
 
     let pjh = thread::spawn(move || {
         let poll = Poll::new().unwrap();
@@ -16,45 +16,48 @@ fn main() {
         let data = "The quick brown fox jumps over the lazy dog".as_bytes();
         let mut pos = 0;
 
-        poll.register(&c, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+        poll.register(&p, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
         
-        loop {
-            poll.poll(&mut events, None).unwrap();
-
-            for events in events {
-                if event.token() == Token(0) && event.readiness().is_readable() {
-                    let n = p.write(data[pos..]).unwrap();
-                    pos += n;
-                    println!("sent");
-                }
+        'outer: loop {
+            let n = p.write(&data[pos..]).unwrap();
+            pos += n;
+            println!("sent {} bytes", n);
+            if n >= data.len() {
+                break;
             }
+
+            poll.poll(&mut events, None).unwrap();
         }
     });
-        match c.read(&mut buf) {
-            Ok(_) => panic!(),
-            Err(err) => {
-                assert_eq!(err.kind(), ErrorKind::BrokenPipe);
-                assert_eq!(err.get_ref().unwrap().description(), "Channel disconnected");
-            }
-        }
 
-    let pjh = thread::spawn(move || {
+    let cjh = thread::spawn(move || {
         let poll = Poll::new().unwrap();
         let mut events = Events::with_capacity(16);
+        let mut data = Vec::new();
+        let mut buf = [0; 4];
 
-        assert_eq!(p.write(&[0; SIZE]).unwrap(), SIZE);
-        poll.register(&p, Token(0), Ready::readable(), PollOpt::edge() | PollOpt::oneshot()).unwrap();
-        poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
+        poll.register(&c, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+        
+        'outer: loop {
+            poll.poll(&mut events, None).unwrap();
 
-        let event = events.iter().next().unwrap();
-        assert_eq!(event.token().0, 0);
-        assert!(event.readiness().is_readable());
-        assert!(!event.readiness().is_writable());
-        assert_eq!(p.write(&[1; SIZE/2]).unwrap(), SIZE/2);
-        poll.reregister(&p, Token(0), Ready::readable(), PollOpt::edge() | PollOpt::oneshot()).unwrap();
-        poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
-
-        thread::sleep(Duration::from_millis(10));
+            for _event in events.iter() {
+                match c.read(&mut buf) {
+                    Ok(n) => {
+                        println!("recieved {} bytes", n);
+                        data.extend_from_slice(&buf[0..n]);
+                    },
+                    Err(err) => {
+                        if err.kind() == ErrorKind::BrokenPipe {
+                            break 'outer;
+                        } else {
+                            panic!();
+                        }
+                    }
+                };
+                println!("sent");
+            }
+        }
     });
 
     pjh.join().unwrap();

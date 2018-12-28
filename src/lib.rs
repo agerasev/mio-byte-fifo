@@ -426,6 +426,7 @@ mod test {
         });
 
         poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
+        thread::sleep(Duration::from_millis(10));
 
         let mut eiter = events.iter();
 
@@ -458,7 +459,7 @@ mod test {
             let mut events = Events::with_capacity(16);
             let mut buf = [0; SIZE/2];
 
-            poll.register(&c, Token(0), Ready::readable(), PollOpt::edge() | PollOpt::oneshot()).unwrap();
+            poll.register(&c, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
             poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
             
             for i in 0..3 {
@@ -468,7 +469,7 @@ mod test {
                 assert!(!event.readiness().is_writable());
                 assert_eq!(c.read(&mut buf).unwrap(), SIZE/2);
                 assert_eq!(&buf, &[i/2; SIZE/2]);
-                poll.reregister(&c, Token(0), Ready::readable(), PollOpt::edge() | PollOpt::oneshot()).unwrap();
+                poll.reregister(&c, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
                 poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
             }
 
@@ -490,7 +491,7 @@ mod test {
             let mut events = Events::with_capacity(16);
 
             assert_eq!(p.write(&[0; SIZE]).unwrap(), SIZE);
-            poll.register(&p, Token(0), Ready::readable(), PollOpt::edge() | PollOpt::oneshot()).unwrap();
+            poll.register(&p, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
             poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
 
             let event = events.iter().next().unwrap();
@@ -498,7 +499,7 @@ mod test {
             assert!(event.readiness().is_readable());
             assert!(!event.readiness().is_writable());
             assert_eq!(p.write(&[1; SIZE/2]).unwrap(), SIZE/2);
-            poll.reregister(&p, Token(0), Ready::readable(), PollOpt::edge() | PollOpt::oneshot()).unwrap();
+            poll.reregister(&p, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
             poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
 
             thread::sleep(Duration::from_millis(10));
