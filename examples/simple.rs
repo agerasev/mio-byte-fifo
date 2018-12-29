@@ -4,12 +4,15 @@ use std::io::{Read, Write};
 
 
 fn main() {
-    let (mut p, mut c) = mio_byte_fifo::create(16);
+    let (mut producer, mut consumer) = mio_byte_fifo::create(16);
 
-    let n = p.write(&[0, 1, 254, 255]).unwrap();
-    println!("{} bytes written", n);
+    let data = [0, 1, 254, 255];
+    let n = producer.write(&data).unwrap();
+    println!("written {} bytes: {:?}", n, data);
 
-    let mut buf = [0; 4];
-    let n = c.read(&mut buf).unwrap();
-    println!("{} bytes read: {:?}", n, buf);
+    let mut buf = [0; 8];
+    let n = consumer.read(&mut buf).unwrap();
+    println!("read    {} bytes: {:?}", n, &buf[0..n]);
+
+    assert_eq!(data, buf[0..n]);
 }
