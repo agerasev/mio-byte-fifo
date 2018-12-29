@@ -25,7 +25,7 @@ Concurrent non-blocking byte FIFO buffer intended for use in [Mio](https://githu
 
 ## Documentation
 + [`crates.io` version documentation](https://docs.rs/mio-byte-fifo)
-+ [`master` branch documentation](https://nthend.github.io/mio-byte-fifo/target/doc/mio-byte-fifo/)
++ [`master` branch documentation](https://nthend.github.io/mio-byte-fifo/target/doc/mio_byte_fifo/index.html)
 
 ## License
 

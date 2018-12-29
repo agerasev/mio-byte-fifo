@@ -74,6 +74,8 @@
 //!         }
 //!     };
 //! 
+//!     // We should register producer as `readable`
+//!     // because its poll mechanism is based on underlying channels
 //!     poll.register(&producer, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
 //!     
 //!     if !write_data_part(&mut producer, &mut pos) {
@@ -86,6 +88,8 @@
 //!         for event in events.iter() {
 //!             assert_eq!(event.token(), Token(0));
 //!             assert!(event.readiness().is_readable());
+//!             // Thats all right, we can write data when producer is `readable`
+//!
 //!             if !write_data_part(&mut producer, &mut pos) {
 //!                 break 'outer;
 //!             }
@@ -584,8 +588,6 @@ mod test {
         let poll = Poll::new().unwrap();
         let mut events = Events::with_capacity(16);
 
-        // We should register producer as `readable`
-        // because poll mechanism if based on underlying channels
         poll.register(&p, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
 
         assert_eq!(p.write(&[0; SIZE]).unwrap(), SIZE);
@@ -607,7 +609,6 @@ mod test {
             let event = eiter.next().unwrap();
             assert_eq!(event.token().0, 0);
 
-            // Thats all right, we can write data when producer is `readable`
             assert!(event.readiness().is_readable());
             assert!(!event.readiness().is_writable());
 
