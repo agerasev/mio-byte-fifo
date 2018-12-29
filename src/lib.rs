@@ -146,6 +146,109 @@ mod test {
 
 
     #[test]
+    fn poll_before() {
+        let (tx, rx) = channel::<u32>();
+        let poll = Poll::new().unwrap();
+        let mut events = Events::with_capacity(16);
+
+        tx.send(1).unwrap();
+        thread::sleep(Duration::from_millis(10));
+
+        poll.register(&rx, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+
+        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
+        let mut hdl = false;
+        for e in events.iter() {
+            assert_eq!(e.token().0, 0);
+            assert!(e.readiness().is_readable());
+            assert_eq!(rx.try_recv().unwrap(), 1);
+            hdl = true;
+        }
+        assert!(hdl);
+    }
+
+    #[test]
+    fn poll_double() {
+        let (tx, rx) = channel::<u32>();
+        let poll = Poll::new().unwrap();
+        let mut events = Events::with_capacity(16);
+
+        tx.send(1).unwrap();
+        thread::sleep(Duration::from_millis(10));
+
+        poll.register(&rx, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+
+        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
+
+        tx.send(2).unwrap();
+        thread::sleep(Duration::from_millis(10));
+
+        let mut hdl = false;
+        for e in events.iter() {
+            assert_eq!(e.token().0, 0);
+            assert!(e.readiness().is_readable());
+            assert_eq!(rx.try_recv().unwrap(), 1);
+            assert_eq!(rx.try_recv().unwrap(), 2);
+            hdl = true;
+        }
+        assert!(hdl);
+
+        tx.send(3).unwrap();
+        thread::sleep(Duration::from_millis(10));
+
+        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
+        assert!(events.iter().next().is_some());
+
+        tx.send(4).unwrap();
+        thread::sleep(Duration::from_millis(10));
+
+        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
+        assert!(events.iter().next().is_none());
+    }
+
+    #[test]
+    fn poll_oneshot() {
+        let (tx, rx) = channel::<u32>();
+        let poll = Poll::new().unwrap();
+        let mut events = Events::with_capacity(16);
+
+        tx.send(1).unwrap();
+        thread::sleep(Duration::from_millis(10));
+
+        poll.register(
+            &rx, Token(0), Ready::readable(), 
+            PollOpt::edge() | PollOpt::oneshot()
+        ).unwrap();
+
+        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
+        let mut hdl = false;
+        for e in events.iter() {
+            assert_eq!(e.token().0, 0);
+            assert!(e.readiness().is_readable());
+            assert_eq!(rx.try_recv().unwrap(), 1);
+            hdl = true;
+        }
+        assert!(hdl);
+
+        tx.send(2).unwrap();
+        thread::sleep(Duration::from_millis(10));
+
+        poll.reregister(
+            &rx, Token(0), Ready::readable(), 
+            PollOpt::edge() | PollOpt::oneshot()
+        ).unwrap();
+
+        let mut hdl = false;
+        for e in events.iter() {
+            assert_eq!(e.token().0, 0);
+            assert!(e.readiness().is_readable());
+            assert_eq!(rx.try_recv().unwrap(), 2);
+            hdl = true;
+        }
+        assert!(hdl);
+    }
+
+    #[test]
     fn write_read() {
         let (mut p, mut c) = create(16);
 
@@ -388,23 +491,30 @@ mod test {
             let _ = p;
         });
 
-        poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
-        
-        let mut eiter = events.iter();
+        'outer: loop {
+            poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
 
-        let event = eiter.next().unwrap();
-        assert_eq!(event.token().0, 0);
-        assert!(event.readiness().is_readable());
-        assert!(!event.readiness().is_writable());
-        match c.read(&mut buf) {
-            Ok(_) => panic!(),
-            Err(err) => {
-                assert_eq!(err.kind(), ErrorKind::BrokenPipe);
-                assert_eq!(err.get_ref().unwrap().description(), "Channel disconnected");
+            for event in events.iter() {
+                assert_eq!(event.token().0, 0);
+                assert!(event.readiness().is_readable());
+                assert!(!event.readiness().is_writable());
+                match c.read(&mut buf) {
+                    Ok(_) => panic!(),
+                    Err(err) => {
+                        match err.kind() {
+                            ErrorKind::BrokenPipe => {
+                                assert_eq!(err.get_ref().unwrap().description(), "Channel disconnected");
+                                break 'outer;
+                            },
+                            ErrorKind::WouldBlock => {
+                                assert_eq!(err.get_ref().unwrap().description(), "Ring buffer is empty");
+                            },
+                            other => panic!("{:?}", other),
+                        }
+                    }
+                }
             }
         }
-
-        assert!(eiter.next().is_none());
 
         jh.join().unwrap();
     }
@@ -425,26 +535,30 @@ mod test {
             let _ = c;
         });
 
-        poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
-        thread::sleep(Duration::from_millis(10));
+        'outer: loop {
+            poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
 
-        let mut eiter = events.iter();
-
-        let event = eiter.next().unwrap();
-        assert_eq!(event.token().0, 0);
-
-        assert!(event.readiness().is_readable());
-        assert!(!event.readiness().is_writable());
-
-        match p.write(b"def") {
-            Ok(_) => panic!(),
-            Err(err) => {
-                assert_eq!(err.kind(), ErrorKind::BrokenPipe);
-                assert_eq!(err.get_ref().unwrap().description(), "Channel disconnected");
+            for event in events.iter() {
+                assert_eq!(event.token().0, 0);
+                assert!(event.readiness().is_readable());
+                assert!(!event.readiness().is_writable());
+                match p.write(b"def") {
+                    Ok(_) => panic!(),
+                    Err(err) => {
+                        match err.kind() {
+                            ErrorKind::BrokenPipe => {
+                                assert_eq!(err.get_ref().unwrap().description(), "Channel disconnected");
+                                break 'outer;
+                            },
+                            ErrorKind::WouldBlock => {
+                                assert_eq!(err.get_ref().unwrap().description(), "Ring buffer is full");
+                            },
+                            other => panic!("{:?}", other),
+                        }
+                    }
+                }
             }
         }
-
-        assert!(eiter.next().is_none());
 
         jh.join().unwrap();
     }
