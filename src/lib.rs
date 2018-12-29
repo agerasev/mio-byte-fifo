@@ -10,13 +10,13 @@ use std::io::{Write, Read, Error, ErrorKind};
 use std::sync::mpsc::{TryRecvError};
 
 use mio::{Evented, Poll, Token, Ready, PollOpt};
-use mio_extras::channel::{channel, Sender, Receiver, SendError};
+use mio_extras::channel::{sync_channel, SyncSender, Receiver, TrySendError};
 
 use rb::{RB, RbError, RbProducer, RbConsumer};
 
 
 pub struct Handle<T> {
-    tx: Sender<()>,
+    tx: SyncSender<()>,
     rx: Receiver<()>,
     rb: T,
 }
@@ -28,8 +28,8 @@ pub fn create(capacity: usize) -> (Producer, Consumer) {
     let rb = rb::SpscRb::new(capacity);
     let (rbp, rbc) = (rb.producer(), rb.consumer());
 
-    let (txp, rxc) = channel();
-    let (txc, rxp) = channel();
+    let (txp, rxc) = sync_channel(1);
+    let (txc, rxp) = sync_channel(1);
 
     (Producer { tx: txp, rx: rxp, rb: rbp }, Consumer { tx: txc, rx: rxc, rb: rbc })
 }
@@ -48,30 +48,29 @@ impl<T> Evented for Handle<T> {
 }
 
 impl<T> Handle<T> {
-    fn drain(&mut self) -> Result<(), Error> {
-        loop {
-            match self.rx.try_recv() {
-                Ok(()) => continue,
-                Err(err) => match err {
-                    TryRecvError::Empty => break Ok(()),
-                    TryRecvError::Disconnected => break Err(Error::new(
-                        ErrorKind::BrokenPipe,
-                        "Channel disconnected",
-                    )),
-                }
+    fn drain(&mut self) -> Result<bool, Error> {
+        match self.rx.try_recv() {
+            Ok(()) => Ok(true),
+            Err(err) => match err {
+                TryRecvError::Empty => Ok(false),
+                TryRecvError::Disconnected => Err(Error::new(
+                    ErrorKind::BrokenPipe,
+                    "Channel disconnected",
+                )),
             }
         }
     }
 
-    fn notify(&mut self) -> Result<(), Error> {
-        match self.tx.send(()) {
-            Ok(()) => Ok(()),
+    fn notify(&mut self) -> Result<bool, Error> {
+        match self.tx.try_send(()) {
+            Ok(()) => Ok(true),
             Err(err) => match err {
-                SendError::Io(e) => Err(e),
-                SendError::Disconnected(()) => Err(Error::new(
+                TrySendError::Io(e) => Err(e),
+                TrySendError::Disconnected(()) => Err(Error::new(
                     ErrorKind::BrokenPipe,
                     "Channel disconnected",
                 )),
+                TrySendError::Full(()) => Ok(false),
             }
         }
     }
@@ -122,7 +121,7 @@ impl Read for Consumer {
             Err(err) => match err {
                 RbError::Empty => {
                     match dres {
-                        Ok(()) => Err(Error::new(
+                        Ok(_) => Err(Error::new(
                             ErrorKind::WouldBlock,
                             "Ring buffer is empty",
                         )),
@@ -143,6 +142,7 @@ mod test {
     use std::time::{Duration};
 
     use mio::{Events};
+    use mio_extras::channel::{channel};
 
 
     #[test]
@@ -165,6 +165,36 @@ mod test {
             hdl = true;
         }
         assert!(hdl);
+    }
+
+    #[test]
+    fn poll_after() {
+        let (tx, rx) = channel::<u32>();
+        let poll = Poll::new().unwrap();
+        let mut events = Events::with_capacity(16);
+
+        poll.register(&rx, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+
+        tx.send(1).unwrap();
+        thread::sleep(Duration::from_millis(10));
+
+        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
+        assert!(events.iter().next().is_some());
+
+        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
+        assert!(events.iter().next().is_none());
+
+        assert_eq!(rx.try_recv().unwrap(), 1);
+        thread::sleep(Duration::from_millis(10));
+
+        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
+        assert!(events.iter().next().is_none());
+
+        tx.send(2).unwrap();
+        thread::sleep(Duration::from_millis(10));
+
+        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
+        assert!(events.iter().next().is_some());
     }
 
     #[test]
@@ -410,7 +440,7 @@ mod test {
             p
         });
 
-        poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
+        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
         thread::sleep(Duration::from_millis(10));
 
         {
@@ -453,7 +483,7 @@ mod test {
             c
         });
 
-        poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
+        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
         thread::sleep(Duration::from_millis(10));
 
         {
@@ -574,7 +604,7 @@ mod test {
             let mut buf = [0; SIZE/2];
 
             poll.register(&c, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
-            poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
+            poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
             
             for i in 0..3 {
                 let event = events.iter().next().unwrap();
@@ -584,7 +614,7 @@ mod test {
                 assert_eq!(c.read(&mut buf).unwrap(), SIZE/2);
                 assert_eq!(&buf, &[i/2; SIZE/2]);
                 poll.reregister(&c, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
-                poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
+                poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
             }
 
             let event = events.iter().next().unwrap();
@@ -606,7 +636,7 @@ mod test {
 
             assert_eq!(p.write(&[0; SIZE]).unwrap(), SIZE);
             poll.register(&p, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
-            poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
+            poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
 
             let event = events.iter().next().unwrap();
             assert_eq!(event.token().0, 0);
@@ -614,7 +644,7 @@ mod test {
             assert!(!event.readiness().is_writable());
             assert_eq!(p.write(&[1; SIZE/2]).unwrap(), SIZE/2);
             poll.reregister(&p, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
-            poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
+            poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
 
             thread::sleep(Duration::from_millis(10));
         });
