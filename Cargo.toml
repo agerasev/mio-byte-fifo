@@ -7,7 +7,7 @@ documentation = "https://docs.rs/mio-byte-fifo"
 homepage = "https://github.com/nthend/mio-byte-fifo"
 repository = "https://github.com/nthend/mio-byte-fifo.git"
 readme = "README.md"
-keywords = ["non-blocking", "bytes", "fifo", "buffer", "mio", "poll"]
+keywords = ["non-blocking", "bytes", "fifo", "mio", "poll"]
 categories = ["asynchronous", "concurrency", "data-structures"]
 license = "MIT/Apache-2.0"
 
