@@ -419,6 +419,49 @@ mod test {
 
         jh.join().unwrap();
     }
+
+    #[test]
+    fn dereg_reg() {
+        let (reg, sr) = Registration::new2();
+        let poll = Poll::new().unwrap();
+        let mut events = Events::with_capacity(16);
+
+        let jh = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            sr.set_readiness(Ready::readable()).unwrap();
+
+            thread::sleep(Duration::from_millis(10));
+            sr.set_readiness(Ready::readable()).unwrap();
+        });
+
+        poll.register(&reg, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+
+        poll.poll(&mut events, Some(Duration::from_secs(1))).unwrap();
+        let mut hdl = false;
+        for e in events.iter() {
+            assert_eq!(e.token().0, 0);
+            assert!(e.readiness().is_readable());
+            hdl = true;
+        }
+        assert!(hdl);
+
+        poll.deregister(&reg).unwrap();
+
+        poll.register(&reg, Token(1), Ready::readable(), PollOpt::edge()).unwrap();
+
+        poll.poll(&mut events, Some(Duration::from_secs(1))).unwrap();
+        let mut hdl = false;
+        for e in events.iter() {
+            assert_eq!(e.token().0, 1);
+            assert!(e.readiness().is_readable());
+            hdl = true;
+        }
+        assert!(hdl);
+
+        poll.deregister(&reg).unwrap();
+
+        jh.join().unwrap();
+    }
     
     #[test]
     fn write_read() {
