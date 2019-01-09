@@ -1,1 +1,1 @@
-initSidebarItems({"fn":[["create",""]],"struct":[["Handle",""]],"type":[["Consumer",""],["Producer",""]]});
+initSidebarItems({"fn":[["create",""]],"struct":[["Consumer",""],["Producer",""]]});
