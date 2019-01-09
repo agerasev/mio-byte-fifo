@@ -46,9 +46,7 @@ fn main() {
             }
         };
 
-        // We should register producer as `readable`
-        // because its poll mechanism is based on underlying channels
-        poll.register(&producer, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+        poll.register(&producer, Token(0), Ready::writable(), PollOpt::edge()).unwrap();
         
         if !write_data_part(&mut producer, &mut pos) {
             return;
@@ -59,8 +57,7 @@ fn main() {
 
             for event in events.iter() {
                 assert_eq!(event.token(), Token(0));
-                assert!(event.readiness().is_readable());
-                // Thats all right, we can write data when producer is `readable`
+                assert!(event.readiness().is_writable());
 
                 if !write_data_part(&mut producer, &mut pos) {
                     break 'outer;

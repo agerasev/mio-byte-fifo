@@ -3,10 +3,9 @@
 //! # Simple example
 //!
 //! ```rust
-//! extern crate mio_byte_fifo;
+//! # extern crate mio_byte_fifo;
 //! 
 //! use std::io::{Read, Write};
-//! 
 //! 
 //! # fn main() {
 //! let (mut producer, mut consumer) = mio_byte_fifo::create(16);
@@ -26,10 +25,8 @@
 //! # More complicated example
 //!
 //! ```rust
-//! extern crate mio;
-//! extern crate mio_byte_fifo;
-//! 
-//! # fn main() {
+//! # extern crate mio;
+//! # extern crate mio_byte_fifo;
 //! 
 //! use std::io::{Read, Write, ErrorKind};
 //! use std::thread;
@@ -38,6 +35,8 @@
 //! 
 //! use mio_byte_fifo::{Producer, Consumer};
 //! 
+//! 
+//! # fn main() {
 //! const FIFO_SIZE: usize = 16;
 //! const READ_BUF_SIZE: usize = 7;
 //! const EVENTS_CAPACITY: usize = 4;
@@ -74,9 +73,7 @@
 //!         }
 //!     };
 //! 
-//!     // We should register producer as `readable`
-//!     // because its poll mechanism is based on underlying channels
-//!     poll.register(&producer, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+//!     poll.register(&producer, Token(0), Ready::writable(), PollOpt::edge()).unwrap();
 //!     
 //!     if !write_data_part(&mut producer, &mut pos) {
 //!         return;
@@ -87,9 +84,8 @@
 //! 
 //!         for event in events.iter() {
 //!             assert_eq!(event.token(), Token(0));
-//!             assert!(event.readiness().is_readable());
-//!             // Thats all right, we can write data when producer is `readable`
-//!
+//!             assert!(event.readiness().is_writable());
+//! 
 //!             if !write_data_part(&mut producer, &mut pos) {
 //!                 break 'outer;
 //!             }
@@ -143,7 +139,6 @@
 //! 
 //! println!("received message: '{}'", received_message);
 //! assert_eq!(message, received_message);
-//!
 //! # }
 //! ```
 //!
@@ -151,96 +146,112 @@
 //!
 
 extern crate mio;
-extern crate mio_extras;
 extern crate rb;
 
 
 use std::io::{Write, Read, Error, ErrorKind};
-use std::sync::mpsc::{TryRecvError};
+use std::sync::{Arc, atomic::{fence, AtomicBool, Ordering}};
 
-use mio::{Evented, Poll, Token, Ready, PollOpt};
-use mio_extras::channel::{channel, Sender, Receiver, SendError};
+use mio::{Evented, Poll, Token, Ready, PollOpt, Registration, SetReadiness};
 
-use rb::{RB, RbError, RbProducer, RbConsumer};
+use rb::{RB, RbError, RbProducer, RbConsumer, RbInspector};
 
 
-pub struct Handle<T> {
-    tx: Sender<()>,
-    rx: Receiver<()>,
-    rb: T,
+pub struct Producer {
+    reg: Registration,
+    src: SetReadiness,
+    rb:  Arc<rb::SpscRb<u8>>,
+    rbp: rb::Producer<u8>,
+    cls: Arc<AtomicBool>,
 }
 
-pub type Producer = Handle<rb::Producer<u8>>;
-pub type Consumer = Handle<rb::Consumer<u8>>;
+pub struct Consumer {
+    reg: Registration,
+    srp: SetReadiness,
+    rb:  Arc<rb::SpscRb<u8>>,
+    rbc: rb::Consumer<u8>,
+    cls: Arc<AtomicBool>,
+}
 
 pub fn create(capacity: usize) -> (Producer, Consumer) {
-    let rb = rb::SpscRb::new(capacity);
+    let flag = Arc::new(AtomicBool::new(true));
+
+    let rb = Arc::new(rb::SpscRb::new(capacity));
+
+    let (regp, srp) = Registration::new2();
+    let (regc, src) = Registration::new2();
+
     let (rbp, rbc) = (rb.producer(), rb.consumer());
 
-    let (txp, rxc) = channel();
-    let (txc, rxp) = channel();
+    let prod = Producer { reg: regp, src, rb: rb.clone(), rbp, cls: flag.clone() };
+    let cons = Consumer { reg: regc, srp, rb, rbc, cls: flag };
 
-    (Producer { tx: txp, rx: rxp, rb: rbp }, Consumer { tx: txc, rx: rxc, rb: rbc })
+    (prod, cons)
 }
 
-
-impl<T> Evented for Handle<T> {
+impl Evented for Producer {
     fn register(&self, poll: &Poll, token: Token, interest: Ready, poll_opt: PollOpt) -> Result<(), Error> {
-        poll.register(&self.rx, token, interest, poll_opt)
+        poll.register(&self.reg, token, interest, poll_opt)
     }
+
     fn reregister(&self, poll: &Poll, token: Token, interest: Ready, poll_opt: PollOpt) -> Result<(), Error> {
-        poll.reregister(&self.rx, token, interest, poll_opt)
+        poll.reregister(&self.reg, token, interest, poll_opt)
     }
+
     fn deregister(&self, poll: &Poll) -> Result<(), Error> {
-        poll.deregister(&self.rx)
+        poll.deregister(&self.reg)
     }
 }
 
-impl<T> Handle<T> {
-    fn drain(&mut self) -> Result<(), Error> {
-        loop {
-            match self.rx.try_recv() {
-                Ok(()) => continue,
-                Err(err) => match err {
-                    TryRecvError::Empty => break Ok(()),
-                    TryRecvError::Disconnected => break Err(Error::new(
-                        ErrorKind::BrokenPipe,
-                        "Channel disconnected",
-                    )),
-                }
-            }
-        }
+impl Evented for Consumer {
+    fn register(&self, poll: &Poll, token: Token, interest: Ready, poll_opt: PollOpt) -> Result<(), Error> {
+        poll.register(&self.reg, token, interest, poll_opt)
     }
 
-    fn notify(&mut self) -> Result<(), Error> {
-        match self.tx.send(()) {
-            Ok(()) => Ok(()),
-            Err(err) => match err {
-                SendError::Io(e) => Err(e),
-                SendError::Disconnected(()) => Err(Error::new(
-                    ErrorKind::BrokenPipe,
-                    "Channel disconnected",
-                )),
-            }
-        }
+    fn reregister(&self, poll: &Poll, token: Token, interest: Ready, poll_opt: PollOpt) -> Result<(), Error> {
+        poll.reregister(&self.reg, token, interest, poll_opt)
+    }
+
+    fn deregister(&self, poll: &Poll) -> Result<(), Error> {
+        poll.deregister(&self.reg)
     }
 }
 
-impl<T> Drop for Handle<T> {
+impl Drop for Producer {
     fn drop(&mut self) {
-        let _ = self.notify();
+        self.cls.store(false, Ordering::SeqCst);
+        self.src.set_readiness(Ready::all()).unwrap();
+        fence(Ordering::SeqCst);
+    }
+}
+
+impl Drop for Consumer {
+    fn drop(&mut self) {
+        self.cls.store(false, Ordering::SeqCst);
+        self.srp.set_readiness(Ready::all()).unwrap();
+        fence(Ordering::SeqCst);
     }
 }
 
 impl Write for Producer {
     fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
-        self.drain()?;
-        match self.rb.write(buf) {
+        if !self.cls.load(Ordering::SeqCst) {
+            return Err(Error::new(
+                ErrorKind::BrokenPipe,
+                "Consumer was closed",
+            ))
+        }
+
+        let empty = self.rb.is_empty();
+        match self.rbp.write(buf) {
             Ok(num) => {
-                if num > 0 {
-                    self.notify()?;
-                }
-                Ok(num)
+                if num > 0 && empty {
+                    let res = self.src.set_readiness(Ready::readable());
+                    fence(Ordering::SeqCst);
+                    res
+                } else {
+                    Ok(())
+                }.and(Ok(num))
             },
             Err(err) => match err {
                 RbError::Full => Err(Error::new(
@@ -260,29 +271,37 @@ impl Write for Producer {
 
 impl Read for Consumer {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
-        let dres = self.drain();
-        match self.rb.read(buf) {
+        let full = self.rb.is_full();
+        match self.rbc.read(buf) {
             Ok(num) => {
-                if num > 0 && dres.is_ok() {
-                    self.notify()?;
-                }
-                Ok(num)
+                if num > 0 && full {
+                    let res = self.srp.set_readiness(Ready::writable());
+                    fence(Ordering::SeqCst);
+                    res
+                } else {
+                    Ok(())
+                }.and(Ok(num))
             },
             Err(err) => match err {
-                RbError::Empty => {
-                    match dres {
-                        Ok(()) => Err(Error::new(
+                RbError::Empty => Err({
+                    if !self.cls.load(Ordering::SeqCst) {
+                        Error::new(
+                            ErrorKind::BrokenPipe,
+                            "Producer was closed",
+                        )
+                    } else {
+                        Error::new(
                             ErrorKind::WouldBlock,
                             "Ring buffer is empty",
-                        )),
-                        Err(e) => Err(e),
+                        )
                     }
-                },
+                }),
                 RbError::Full => unreachable!(),
             }
         }
     }
 }
+
 
 #[cfg(test)]
 mod test {
@@ -295,108 +314,112 @@ mod test {
 
 
     #[test]
-    fn poll_before() {
-        let (tx, rx) = channel::<u32>();
+    fn reg_set_r() {
+        let (reg, sr) = Registration::new2();
         let poll = Poll::new().unwrap();
         let mut events = Events::with_capacity(16);
 
-        tx.send(1).unwrap();
-        thread::sleep(Duration::from_millis(10));
+        let jh = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            sr.set_readiness(Ready::readable()).unwrap();
+        });
 
-        poll.register(&rx, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+        poll.register(&reg, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
 
-        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
+        poll.poll(&mut events, Some(Duration::from_secs(1))).unwrap();
         let mut hdl = false;
         for e in events.iter() {
             assert_eq!(e.token().0, 0);
             assert!(e.readiness().is_readable());
-            assert_eq!(rx.try_recv().unwrap(), 1);
             hdl = true;
         }
         assert!(hdl);
+
+        poll.deregister(&reg).unwrap();
+
+        jh.join().unwrap();
     }
 
     #[test]
-    fn poll_double() {
-        let (tx, rx) = channel::<u32>();
+    fn reg_set_w() {
+        let (reg, sr) = Registration::new2();
         let poll = Poll::new().unwrap();
         let mut events = Events::with_capacity(16);
 
-        tx.send(1).unwrap();
-        thread::sleep(Duration::from_millis(10));
+        let jh = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            sr.set_readiness(Ready::writable()).unwrap();
+        });
 
-        poll.register(&rx, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+        poll.register(&reg, Token(0), Ready::writable(), PollOpt::edge()).unwrap();
 
-        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
-
-        tx.send(2).unwrap();
-        thread::sleep(Duration::from_millis(10));
-
+        poll.poll(&mut events, Some(Duration::from_secs(1))).unwrap();
         let mut hdl = false;
         for e in events.iter() {
             assert_eq!(e.token().0, 0);
-            assert!(e.readiness().is_readable());
-            assert_eq!(rx.try_recv().unwrap(), 1);
-            assert_eq!(rx.try_recv().unwrap(), 2);
+            assert!(e.readiness().is_writable());
             hdl = true;
         }
         assert!(hdl);
 
-        tx.send(3).unwrap();
-        thread::sleep(Duration::from_millis(10));
+        poll.deregister(&reg).unwrap();
 
-        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
-        assert!(events.iter().next().is_some());
-
-        tx.send(4).unwrap();
-        thread::sleep(Duration::from_millis(10));
-
-        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
-        assert!(events.iter().next().is_none());
+        jh.join().unwrap();
     }
 
     #[test]
-    fn poll_oneshot() {
-        let (tx, rx) = channel::<u32>();
+    fn reg_set_twice() {
+        let (reg, sr) = Registration::new2();
         let poll = Poll::new().unwrap();
         let mut events = Events::with_capacity(16);
 
-        tx.send(1).unwrap();
-        thread::sleep(Duration::from_millis(10));
+        let jh = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            sr.set_readiness(Ready::readable()).unwrap();
 
-        poll.register(
-            &rx, Token(0), Ready::readable(), 
-            PollOpt::edge() | PollOpt::oneshot()
-        ).unwrap();
+            thread::sleep(Duration::from_millis(10));
+            sr.set_readiness(Ready::readable()).unwrap();
+        });
 
-        poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
+        poll.register(&reg, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+
+        poll.poll(&mut events, Some(Duration::from_secs(1))).unwrap();
         let mut hdl = false;
         for e in events.iter() {
             assert_eq!(e.token().0, 0);
             assert!(e.readiness().is_readable());
-            assert_eq!(rx.try_recv().unwrap(), 1);
             hdl = true;
         }
         assert!(hdl);
 
-        tx.send(2).unwrap();
-        thread::sleep(Duration::from_millis(10));
-
-        poll.reregister(
-            &rx, Token(0), Ready::readable(), 
-            PollOpt::edge() | PollOpt::oneshot()
-        ).unwrap();
-
+        poll.poll(&mut events, Some(Duration::from_secs(1))).unwrap();
         let mut hdl = false;
         for e in events.iter() {
             assert_eq!(e.token().0, 0);
             assert!(e.readiness().is_readable());
-            assert_eq!(rx.try_recv().unwrap(), 2);
             hdl = true;
         }
         assert!(hdl);
+
+        poll.deregister(&reg).unwrap();
+
+        jh.join().unwrap();
     }
 
+    #[test]
+    fn reg_drop() {
+        let (reg, sr) = Registration::new2();
+
+        let jh = thread::spawn(move || {
+            let _ = reg;
+        });
+
+        thread::sleep(Duration::from_millis(10));
+        sr.set_readiness(Ready::readable()).unwrap();
+
+        jh.join().unwrap();
+    }
+    
     #[test]
     fn write_read() {
         let (mut p, mut c) = create(16);
@@ -512,7 +535,7 @@ mod test {
             Ok(_) => panic!(),
             Err(err) => {
                 assert_eq!(err.kind(), ErrorKind::BrokenPipe);
-                assert_eq!(err.get_ref().unwrap().description(), "Channel disconnected");
+                assert_eq!(err.get_ref().unwrap().description(), "Consumer was closed");
             }
         }
     }
@@ -538,7 +561,7 @@ mod test {
             Ok(_) => panic!(),
             Err(err) => {
                 assert_eq!(err.kind(), ErrorKind::BrokenPipe);
-                assert_eq!(err.get_ref().unwrap().description(), "Channel disconnected");
+                assert_eq!(err.get_ref().unwrap().description(), "Producer was closed");
             }
         }
     }
@@ -568,7 +591,6 @@ mod test {
             let event = eiter.next().unwrap();
             assert_eq!(event.token().0, 0);
             assert!(event.readiness().is_readable());
-            assert!(!event.readiness().is_writable());
             assert_eq!(c.read(&mut buf).unwrap(), 6);
             assert_eq!(&buf, b"abcdef");
 
@@ -588,7 +610,7 @@ mod test {
         let poll = Poll::new().unwrap();
         let mut events = Events::with_capacity(16);
 
-        poll.register(&p, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+        poll.register(&p, Token(0), Ready::writable(), PollOpt::edge()).unwrap();
 
         assert_eq!(p.write(&[0; SIZE]).unwrap(), SIZE);
 
@@ -609,8 +631,7 @@ mod test {
             let event = eiter.next().unwrap();
             assert_eq!(event.token().0, 0);
 
-            assert!(event.readiness().is_readable());
-            assert!(!event.readiness().is_writable());
+            assert!(event.readiness().is_writable());
 
             assert_eq!(p.write(b"abcdefghi").unwrap(), 6);
 
@@ -637,25 +658,19 @@ mod test {
             let _ = p;
         });
 
-        'outer: loop {
-            poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
+        'outer: for _ in 0..2 {
+            poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
 
             for event in events.iter() {
                 assert_eq!(event.token().0, 0);
                 assert!(event.readiness().is_readable());
-                assert!(!event.readiness().is_writable());
                 match c.read(&mut buf) {
                     Ok(_) => panic!(),
                     Err(err) => {
                         match err.kind() {
-                            ErrorKind::BrokenPipe => {
-                                assert_eq!(err.get_ref().unwrap().description(), "Channel disconnected");
-                                break 'outer;
-                            },
-                            ErrorKind::WouldBlock => {
-                                assert_eq!(err.get_ref().unwrap().description(), "Ring buffer is empty");
-                            },
-                            other => panic!("{:?}", other),
+                            ErrorKind::BrokenPipe => break 'outer,
+                            ErrorKind::WouldBlock => (),
+                            _ => panic!("{:?}", err),
                         }
                     }
                 }
@@ -672,7 +687,7 @@ mod test {
         let poll = Poll::new().unwrap();
         let mut events = Events::with_capacity(16);
 
-        poll.register(&p, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+        poll.register(&p, Token(0), Ready::writable(), PollOpt::edge()).unwrap();
 
         assert_eq!(p.write(&[0; SIZE]).unwrap(), SIZE);
 
@@ -682,24 +697,18 @@ mod test {
         });
 
         'outer: loop {
-            poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
+            poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
 
             for event in events.iter() {
                 assert_eq!(event.token().0, 0);
-                assert!(event.readiness().is_readable());
-                assert!(!event.readiness().is_writable());
+                assert!(event.readiness().is_writable());
                 match p.write(b"def") {
                     Ok(_) => panic!(),
                     Err(err) => {
                         match err.kind() {
-                            ErrorKind::BrokenPipe => {
-                                assert_eq!(err.get_ref().unwrap().description(), "Channel disconnected");
-                                break 'outer;
-                            },
-                            ErrorKind::WouldBlock => {
-                                assert_eq!(err.get_ref().unwrap().description(), "Ring buffer is full");
-                            },
-                            other => panic!("{:?}", other),
+                            ErrorKind::BrokenPipe => break 'outer,
+                            ErrorKind::WouldBlock => (),
+                            _ => panic!("{:?}", err),
                         }
                     }
                 }
@@ -719,31 +728,34 @@ mod test {
             let mut events = Events::with_capacity(16);
             let mut buf = [0; SIZE/2];
 
-            poll.register(&c, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
-            poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
+            poll.register(&c, Token(0), Ready::readable(), PollOpt::edge() | PollOpt::oneshot()).unwrap();
             
-            for i in 0..3 {
-                let event = events.iter().next().unwrap();
-                assert_eq!(event.token().0, 0);
-                assert!(event.readiness().is_readable());
-                assert!(!event.readiness().is_writable());
-                assert_eq!(c.read(&mut buf).unwrap(), SIZE/2);
-                assert_eq!(&buf, &[i/2; SIZE/2]);
-                poll.reregister(&c, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+            let mut i = 0;
+            'outer: loop {
                 poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
-            }
-
-            let event = events.iter().next().unwrap();
-            assert_eq!(event.token().0, 0);
-            assert!(event.readiness().is_readable());
-            assert!(!event.readiness().is_writable());
-            match c.read(&mut buf) {
-                Ok(_) => panic!(),
-                Err(err) => {
-                    assert_eq!(err.kind(), ErrorKind::BrokenPipe);
-                    assert_eq!(err.get_ref().unwrap().description(), "Channel disconnected");
+                for event in events.iter() {
+                    assert_eq!(event.token().0, 0);
+                    assert!(event.readiness().is_readable());
+                    'inner: loop {
+                        match c.read(&mut buf) {
+                            Ok(n) => {
+                                assert_eq!(n, SIZE/2);
+                                assert_eq!(&buf, &[i/2; SIZE/2]);
+                                i += 1;
+                            },
+                            Err(err) => {
+                                match err.kind() {
+                                    ErrorKind::BrokenPipe => break 'outer,
+                                    ErrorKind::WouldBlock => break 'inner,
+                                    _ => panic!("{:?}", err),
+                                }
+                            }
+                        }
+                    }
                 }
+                poll.reregister(&c, Token(0), Ready::readable(), PollOpt::edge() | PollOpt::oneshot()).unwrap();
             }
+            assert_eq!(i, 3);
         });
 
         let pjh = thread::spawn(move || {
@@ -751,15 +763,14 @@ mod test {
             let mut events = Events::with_capacity(16);
 
             assert_eq!(p.write(&[0; SIZE]).unwrap(), SIZE);
-            poll.register(&p, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+            poll.register(&p, Token(0), Ready::writable(), PollOpt::edge() | PollOpt::oneshot()).unwrap();
             poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
 
             let event = events.iter().next().unwrap();
             assert_eq!(event.token().0, 0);
-            assert!(event.readiness().is_readable());
-            assert!(!event.readiness().is_writable());
+            assert!(event.readiness().is_writable());
             assert_eq!(p.write(&[1; SIZE/2]).unwrap(), SIZE/2);
-            poll.reregister(&p, Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+            poll.reregister(&p, Token(0), Ready::writable(), PollOpt::edge() | PollOpt::oneshot()).unwrap();
             poll.poll(&mut events, Some(Duration::from_secs(10))).unwrap();
 
             thread::sleep(Duration::from_millis(10));
@@ -769,4 +780,3 @@ mod test {
         cjh.join().unwrap();
     }
 }
-
