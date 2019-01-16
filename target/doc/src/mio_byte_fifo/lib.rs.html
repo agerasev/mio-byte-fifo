@@ -780,6 +780,49 @@
 <span id="780">780</span>
 <span id="781">781</span>
 <span id="782">782</span>
+<span id="783">783</span>
+<span id="784">784</span>
+<span id="785">785</span>
+<span id="786">786</span>
+<span id="787">787</span>
+<span id="788">788</span>
+<span id="789">789</span>
+<span id="790">790</span>
+<span id="791">791</span>
+<span id="792">792</span>
+<span id="793">793</span>
+<span id="794">794</span>
+<span id="795">795</span>
+<span id="796">796</span>
+<span id="797">797</span>
+<span id="798">798</span>
+<span id="799">799</span>
+<span id="800">800</span>
+<span id="801">801</span>
+<span id="802">802</span>
+<span id="803">803</span>
+<span id="804">804</span>
+<span id="805">805</span>
+<span id="806">806</span>
+<span id="807">807</span>
+<span id="808">808</span>
+<span id="809">809</span>
+<span id="810">810</span>
+<span id="811">811</span>
+<span id="812">812</span>
+<span id="813">813</span>
+<span id="814">814</span>
+<span id="815">815</span>
+<span id="816">816</span>
+<span id="817">817</span>
+<span id="818">818</span>
+<span id="819">819</span>
+<span id="820">820</span>
+<span id="821">821</span>
+<span id="822">822</span>
+<span id="823">823</span>
+<span id="824">824</span>
+<span id="825">825</span>
 </pre><pre class="rust ">
 <span class="doccomment">//! Concurrent non-blocking byte FIFO buffer intended for use in [`Mio`] poll</span>
 <span class="doccomment">//!</span>
@@ -929,7 +972,7 @@
 <span class="doccomment">//!</span>
 
 <span class="kw">extern</span> <span class="kw">crate</span> <span class="ident">mio</span>;
-<span class="kw">extern</span> <span class="kw">crate</span> <span class="ident">rb</span>;
+<span class="kw">extern</span> <span class="kw">crate</span> <span class="ident">ringbuf</span>;
 
 
 <span class="kw">use</span> <span class="ident">std</span>::<span class="ident">io</span>::{<span class="ident">Write</span>, <span class="ident">Read</span>, <span class="ident">Error</span>, <span class="ident">ErrorKind</span>};
@@ -937,37 +980,39 @@
 
 <span class="kw">use</span> <span class="ident">mio</span>::{<span class="ident">Evented</span>, <span class="ident">Poll</span>, <span class="ident">Token</span>, <span class="ident">Ready</span>, <span class="ident">PollOpt</span>, <span class="ident">Registration</span>, <span class="ident">SetReadiness</span>};
 
-<span class="kw">use</span> <span class="ident">rb</span>::{<span class="ident">RB</span>, <span class="ident">RbError</span>, <span class="ident">RbProducer</span>, <span class="ident">RbConsumer</span>, <span class="ident">RbInspector</span>};
+<span class="kw">use</span> <span class="ident">ringbuf</span>::{
+    <span class="ident">RingBuffer</span>,
+    <span class="ident">Producer</span> <span class="kw">as</span> <span class="ident">RbProducer</span>, <span class="ident">Consumer</span> <span class="kw">as</span> <span class="ident">RbConsumer</span>,
+    <span class="ident">PushError</span>, <span class="ident">PopError</span>
+};
 
 
 <span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">Producer</span> {
     <span class="ident">reg</span>: <span class="ident">Registration</span>,
     <span class="ident">src</span>: <span class="ident">SetReadiness</span>,
-    <span class="ident">rb</span>:  <span class="ident">Arc</span><span class="op">&lt;</span><span class="ident">rb</span>::<span class="ident">SpscRb</span><span class="op">&lt;</span><span class="ident">u8</span><span class="op">&gt;&gt;</span>,
-    <span class="ident">rbp</span>: <span class="ident">rb</span>::<span class="ident">Producer</span><span class="op">&lt;</span><span class="ident">u8</span><span class="op">&gt;</span>,
+    <span class="ident">rbp</span>: <span class="ident">RbProducer</span><span class="op">&lt;</span><span class="ident">u8</span><span class="op">&gt;</span>,
     <span class="ident">cls</span>: <span class="ident">Arc</span><span class="op">&lt;</span><span class="ident">AtomicBool</span><span class="op">&gt;</span>,
 }
 
 <span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">Consumer</span> {
     <span class="ident">reg</span>: <span class="ident">Registration</span>,
     <span class="ident">srp</span>: <span class="ident">SetReadiness</span>,
-    <span class="ident">rb</span>:  <span class="ident">Arc</span><span class="op">&lt;</span><span class="ident">rb</span>::<span class="ident">SpscRb</span><span class="op">&lt;</span><span class="ident">u8</span><span class="op">&gt;&gt;</span>,
-    <span class="ident">rbc</span>: <span class="ident">rb</span>::<span class="ident">Consumer</span><span class="op">&lt;</span><span class="ident">u8</span><span class="op">&gt;</span>,
+    <span class="ident">rbc</span>: <span class="ident">RbConsumer</span><span class="op">&lt;</span><span class="ident">u8</span><span class="op">&gt;</span>,
     <span class="ident">cls</span>: <span class="ident">Arc</span><span class="op">&lt;</span><span class="ident">AtomicBool</span><span class="op">&gt;</span>,
 }
 
 <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">create</span>(<span class="ident">capacity</span>: <span class="ident">usize</span>) <span class="op">-&gt;</span> (<span class="ident">Producer</span>, <span class="ident">Consumer</span>) {
     <span class="kw">let</span> <span class="ident">flag</span> <span class="op">=</span> <span class="ident">Arc</span>::<span class="ident">new</span>(<span class="ident">AtomicBool</span>::<span class="ident">new</span>(<span class="bool-val">true</span>));
 
-    <span class="kw">let</span> <span class="ident">rb</span> <span class="op">=</span> <span class="ident">Arc</span>::<span class="ident">new</span>(<span class="ident">rb</span>::<span class="ident">SpscRb</span>::<span class="ident">new</span>(<span class="ident">capacity</span>));
+    <span class="kw">let</span> <span class="ident">rb</span> <span class="op">=</span> <span class="ident">RingBuffer</span>::<span class="op">&lt;</span><span class="ident">u8</span><span class="op">&gt;</span>::<span class="ident">new</span>(<span class="ident">capacity</span>);
 
     <span class="kw">let</span> (<span class="ident">regp</span>, <span class="ident">srp</span>) <span class="op">=</span> <span class="ident">Registration</span>::<span class="ident">new2</span>();
     <span class="kw">let</span> (<span class="ident">regc</span>, <span class="ident">src</span>) <span class="op">=</span> <span class="ident">Registration</span>::<span class="ident">new2</span>();
 
-    <span class="kw">let</span> (<span class="ident">rbp</span>, <span class="ident">rbc</span>) <span class="op">=</span> (<span class="ident">rb</span>.<span class="ident">producer</span>(), <span class="ident">rb</span>.<span class="ident">consumer</span>());
+    <span class="kw">let</span> (<span class="ident">rbp</span>, <span class="ident">rbc</span>) <span class="op">=</span> <span class="ident">rb</span>.<span class="ident">split</span>();
 
-    <span class="kw">let</span> <span class="ident">prod</span> <span class="op">=</span> <span class="ident">Producer</span> { <span class="ident">reg</span>: <span class="ident">regp</span>, <span class="ident">src</span>, <span class="ident">rb</span>: <span class="ident">rb</span>.<span class="ident">clone</span>(), <span class="ident">rbp</span>, <span class="ident">cls</span>: <span class="ident">flag</span>.<span class="ident">clone</span>() };
-    <span class="kw">let</span> <span class="ident">cons</span> <span class="op">=</span> <span class="ident">Consumer</span> { <span class="ident">reg</span>: <span class="ident">regc</span>, <span class="ident">srp</span>, <span class="ident">rb</span>, <span class="ident">rbc</span>, <span class="ident">cls</span>: <span class="ident">flag</span> };
+    <span class="kw">let</span> <span class="ident">prod</span> <span class="op">=</span> <span class="ident">Producer</span> { <span class="ident">reg</span>: <span class="ident">regp</span>, <span class="ident">src</span>, <span class="ident">rbp</span>, <span class="ident">cls</span>: <span class="ident">flag</span>.<span class="ident">clone</span>() };
+    <span class="kw">let</span> <span class="ident">cons</span> <span class="op">=</span> <span class="ident">Consumer</span> { <span class="ident">reg</span>: <span class="ident">regc</span>, <span class="ident">srp</span>, <span class="ident">rbc</span>, <span class="ident">cls</span>: <span class="ident">flag</span> };
 
     (<span class="ident">prod</span>, <span class="ident">cons</span>)
 }
@@ -1025,8 +1070,8 @@
             ))
         }
 
-        <span class="kw">let</span> <span class="ident">empty</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">rb</span>.<span class="ident">is_empty</span>();
-        <span class="kw">match</span> <span class="self">self</span>.<span class="ident">rbp</span>.<span class="ident">write</span>(<span class="ident">buf</span>) {
+        <span class="kw">let</span> <span class="ident">empty</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">rbp</span>.<span class="ident">is_empty</span>();
+        <span class="kw">match</span> <span class="self">self</span>.<span class="ident">rbp</span>.<span class="ident">push_slice</span>(<span class="ident">buf</span>) {
             <span class="prelude-val">Ok</span>(<span class="ident">num</span>) <span class="op">=&gt;</span> {
                 <span class="kw">if</span> <span class="ident">num</span> <span class="op">&gt;</span> <span class="number">0</span> <span class="op">&amp;&amp;</span> <span class="ident">empty</span> {
                     <span class="kw">let</span> <span class="ident">res</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">src</span>.<span class="ident">set_readiness</span>(<span class="ident">Ready</span>::<span class="ident">readable</span>());
@@ -1037,11 +1082,10 @@
                 }.<span class="ident">and</span>(<span class="prelude-val">Ok</span>(<span class="ident">num</span>))
             },
             <span class="prelude-val">Err</span>(<span class="ident">err</span>) <span class="op">=&gt;</span> <span class="kw">match</span> <span class="ident">err</span> {
-                <span class="ident">RbError</span>::<span class="ident">Full</span> <span class="op">=&gt;</span> <span class="prelude-val">Err</span>(<span class="ident">Error</span>::<span class="ident">new</span>(
+                <span class="ident">PushError</span>::<span class="ident">Full</span> <span class="op">=&gt;</span> <span class="prelude-val">Err</span>(<span class="ident">Error</span>::<span class="ident">new</span>(
                     <span class="ident">ErrorKind</span>::<span class="ident">WouldBlock</span>,
                     <span class="string">&quot;Ring buffer is full&quot;</span>,
                 )),
-                <span class="ident">RbError</span>::<span class="ident">Empty</span> <span class="op">=&gt;</span> <span class="macro">unreachable</span><span class="macro">!</span>(),
             }
         }
     }
@@ -1054,8 +1098,8 @@
 
 <span class="kw">impl</span> <span class="ident">Read</span> <span class="kw">for</span> <span class="ident">Consumer</span> {
     <span class="kw">fn</span> <span class="ident">read</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">self</span>, <span class="ident">buf</span>: <span class="kw-2">&amp;</span><span class="kw-2">mut</span> [<span class="ident">u8</span>]) <span class="op">-&gt;</span> <span class="prelude-ty">Result</span><span class="op">&lt;</span><span class="ident">usize</span>, <span class="ident">Error</span><span class="op">&gt;</span> {
-        <span class="kw">let</span> <span class="ident">full</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">rb</span>.<span class="ident">is_full</span>();
-        <span class="kw">match</span> <span class="self">self</span>.<span class="ident">rbc</span>.<span class="ident">read</span>(<span class="ident">buf</span>) {
+        <span class="kw">let</span> <span class="ident">full</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">rbc</span>.<span class="ident">is_full</span>();
+        <span class="kw">match</span> <span class="self">self</span>.<span class="ident">rbc</span>.<span class="ident">pop_slice</span>(<span class="ident">buf</span>) {
             <span class="prelude-val">Ok</span>(<span class="ident">num</span>) <span class="op">=&gt;</span> {
                 <span class="kw">if</span> <span class="ident">num</span> <span class="op">&gt;</span> <span class="number">0</span> <span class="op">&amp;&amp;</span> <span class="ident">full</span> {
                     <span class="kw">let</span> <span class="ident">res</span> <span class="op">=</span> <span class="self">self</span>.<span class="ident">srp</span>.<span class="ident">set_readiness</span>(<span class="ident">Ready</span>::<span class="ident">writable</span>());
@@ -1066,7 +1110,7 @@
                 }.<span class="ident">and</span>(<span class="prelude-val">Ok</span>(<span class="ident">num</span>))
             },
             <span class="prelude-val">Err</span>(<span class="ident">err</span>) <span class="op">=&gt;</span> <span class="kw">match</span> <span class="ident">err</span> {
-                <span class="ident">RbError</span>::<span class="ident">Empty</span> <span class="op">=&gt;</span> <span class="prelude-val">Err</span>({
+                <span class="ident">PopError</span>::<span class="ident">Empty</span> <span class="op">=&gt;</span> <span class="prelude-val">Err</span>({
                     <span class="kw">if</span> <span class="op">!</span><span class="self">self</span>.<span class="ident">cls</span>.<span class="ident">load</span>(<span class="ident">Ordering</span>::<span class="ident">SeqCst</span>) {
                         <span class="ident">Error</span>::<span class="ident">new</span>(
                             <span class="ident">ErrorKind</span>::<span class="ident">BrokenPipe</span>,
@@ -1079,7 +1123,6 @@
                         )
                     }
                 }),
-                <span class="ident">RbError</span>::<span class="ident">Full</span> <span class="op">=&gt;</span> <span class="macro">unreachable</span><span class="macro">!</span>(),
             }
         }
     }
@@ -1199,6 +1242,49 @@
 
         <span class="ident">thread</span>::<span class="ident">sleep</span>(<span class="ident">Duration</span>::<span class="ident">from_millis</span>(<span class="number">10</span>));
         <span class="ident">sr</span>.<span class="ident">set_readiness</span>(<span class="ident">Ready</span>::<span class="ident">readable</span>()).<span class="ident">unwrap</span>();
+
+        <span class="ident">jh</span>.<span class="ident">join</span>().<span class="ident">unwrap</span>();
+    }
+
+    <span class="attribute">#[<span class="ident">test</span>]</span>
+    <span class="kw">fn</span> <span class="ident">dereg_reg</span>() {
+        <span class="kw">let</span> (<span class="ident">reg</span>, <span class="ident">sr</span>) <span class="op">=</span> <span class="ident">Registration</span>::<span class="ident">new2</span>();
+        <span class="kw">let</span> <span class="ident">poll</span> <span class="op">=</span> <span class="ident">Poll</span>::<span class="ident">new</span>().<span class="ident">unwrap</span>();
+        <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">events</span> <span class="op">=</span> <span class="ident">Events</span>::<span class="ident">with_capacity</span>(<span class="number">16</span>);
+
+        <span class="kw">let</span> <span class="ident">jh</span> <span class="op">=</span> <span class="ident">thread</span>::<span class="ident">spawn</span>(<span class="kw">move</span> <span class="op">||</span> {
+            <span class="ident">thread</span>::<span class="ident">sleep</span>(<span class="ident">Duration</span>::<span class="ident">from_millis</span>(<span class="number">10</span>));
+            <span class="ident">sr</span>.<span class="ident">set_readiness</span>(<span class="ident">Ready</span>::<span class="ident">readable</span>()).<span class="ident">unwrap</span>();
+
+            <span class="ident">thread</span>::<span class="ident">sleep</span>(<span class="ident">Duration</span>::<span class="ident">from_millis</span>(<span class="number">10</span>));
+            <span class="ident">sr</span>.<span class="ident">set_readiness</span>(<span class="ident">Ready</span>::<span class="ident">readable</span>()).<span class="ident">unwrap</span>();
+        });
+
+        <span class="ident">poll</span>.<span class="ident">register</span>(<span class="kw-2">&amp;</span><span class="ident">reg</span>, <span class="ident">Token</span>(<span class="number">0</span>), <span class="ident">Ready</span>::<span class="ident">readable</span>(), <span class="ident">PollOpt</span>::<span class="ident">edge</span>()).<span class="ident">unwrap</span>();
+
+        <span class="ident">poll</span>.<span class="ident">poll</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="ident">events</span>, <span class="prelude-val">Some</span>(<span class="ident">Duration</span>::<span class="ident">from_secs</span>(<span class="number">1</span>))).<span class="ident">unwrap</span>();
+        <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">hdl</span> <span class="op">=</span> <span class="bool-val">false</span>;
+        <span class="kw">for</span> <span class="ident">e</span> <span class="kw">in</span> <span class="ident">events</span>.<span class="ident">iter</span>() {
+            <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">e</span>.<span class="ident">token</span>().<span class="number">0</span>, <span class="number">0</span>);
+            <span class="macro">assert</span><span class="macro">!</span>(<span class="ident">e</span>.<span class="ident">readiness</span>().<span class="ident">is_readable</span>());
+            <span class="ident">hdl</span> <span class="op">=</span> <span class="bool-val">true</span>;
+        }
+        <span class="macro">assert</span><span class="macro">!</span>(<span class="ident">hdl</span>);
+
+        <span class="ident">poll</span>.<span class="ident">deregister</span>(<span class="kw-2">&amp;</span><span class="ident">reg</span>).<span class="ident">unwrap</span>();
+
+        <span class="ident">poll</span>.<span class="ident">register</span>(<span class="kw-2">&amp;</span><span class="ident">reg</span>, <span class="ident">Token</span>(<span class="number">1</span>), <span class="ident">Ready</span>::<span class="ident">readable</span>(), <span class="ident">PollOpt</span>::<span class="ident">edge</span>()).<span class="ident">unwrap</span>();
+
+        <span class="ident">poll</span>.<span class="ident">poll</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="ident">events</span>, <span class="prelude-val">Some</span>(<span class="ident">Duration</span>::<span class="ident">from_secs</span>(<span class="number">1</span>))).<span class="ident">unwrap</span>();
+        <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">hdl</span> <span class="op">=</span> <span class="bool-val">false</span>;
+        <span class="kw">for</span> <span class="ident">e</span> <span class="kw">in</span> <span class="ident">events</span>.<span class="ident">iter</span>() {
+            <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">e</span>.<span class="ident">token</span>().<span class="number">0</span>, <span class="number">1</span>);
+            <span class="macro">assert</span><span class="macro">!</span>(<span class="ident">e</span>.<span class="ident">readiness</span>().<span class="ident">is_readable</span>());
+            <span class="ident">hdl</span> <span class="op">=</span> <span class="bool-val">true</span>;
+        }
+        <span class="macro">assert</span><span class="macro">!</span>(<span class="ident">hdl</span>);
+
+        <span class="ident">poll</span>.<span class="ident">deregister</span>(<span class="kw-2">&amp;</span><span class="ident">reg</span>).<span class="ident">unwrap</span>();
 
         <span class="ident">jh</span>.<span class="ident">join</span>().<span class="ident">unwrap</span>();
     }
