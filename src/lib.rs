@@ -146,7 +146,7 @@
 //!
 
 extern crate mio;
-extern crate rb;
+extern crate ringbuf;
 
 
 use std::io::{Write, Read, Error, ErrorKind};
@@ -154,37 +154,39 @@ use std::sync::{Arc, atomic::{fence, AtomicBool, Ordering}};
 
 use mio::{Evented, Poll, Token, Ready, PollOpt, Registration, SetReadiness};
 
-use rb::{RB, RbError, RbProducer, RbConsumer, RbInspector};
+use ringbuf::{
+    RingBuffer,
+    Producer as RbProducer, Consumer as RbConsumer,
+    PushError, PopError
+};
 
 
 pub struct Producer {
     reg: Registration,
     src: SetReadiness,
-    rb:  Arc<rb::SpscRb<u8>>,
-    rbp: rb::Producer<u8>,
+    rbp: RbProducer<u8>,
     cls: Arc<AtomicBool>,
 }
 
 pub struct Consumer {
     reg: Registration,
     srp: SetReadiness,
-    rb:  Arc<rb::SpscRb<u8>>,
-    rbc: rb::Consumer<u8>,
+    rbc: RbConsumer<u8>,
     cls: Arc<AtomicBool>,
 }
 
 pub fn create(capacity: usize) -> (Producer, Consumer) {
     let flag = Arc::new(AtomicBool::new(true));
 
-    let rb = Arc::new(rb::SpscRb::new(capacity));
+    let rb = RingBuffer::<u8>::new(capacity);
 
     let (regp, srp) = Registration::new2();
     let (regc, src) = Registration::new2();
 
-    let (rbp, rbc) = (rb.producer(), rb.consumer());
+    let (rbp, rbc) = rb.split();
 
-    let prod = Producer { reg: regp, src, rb: rb.clone(), rbp, cls: flag.clone() };
-    let cons = Consumer { reg: regc, srp, rb, rbc, cls: flag };
+    let prod = Producer { reg: regp, src, rbp, cls: flag.clone() };
+    let cons = Consumer { reg: regc, srp, rbc, cls: flag };
 
     (prod, cons)
 }
@@ -242,8 +244,8 @@ impl Write for Producer {
             ))
         }
 
-        let empty = self.rb.is_empty();
-        match self.rbp.write(buf) {
+        let empty = self.rbp.is_empty();
+        match self.rbp.push_slice(buf) {
             Ok(num) => {
                 if num > 0 && empty {
                     let res = self.src.set_readiness(Ready::readable());
@@ -254,11 +256,10 @@ impl Write for Producer {
                 }.and(Ok(num))
             },
             Err(err) => match err {
-                RbError::Full => Err(Error::new(
+                PushError::Full => Err(Error::new(
                     ErrorKind::WouldBlock,
                     "Ring buffer is full",
                 )),
-                RbError::Empty => unreachable!(),
             }
         }
     }
@@ -271,8 +272,8 @@ impl Write for Producer {
 
 impl Read for Consumer {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
-        let full = self.rb.is_full();
-        match self.rbc.read(buf) {
+        let full = self.rbc.is_full();
+        match self.rbc.pop_slice(buf) {
             Ok(num) => {
                 if num > 0 && full {
                     let res = self.srp.set_readiness(Ready::writable());
@@ -283,7 +284,7 @@ impl Read for Consumer {
                 }.and(Ok(num))
             },
             Err(err) => match err {
-                RbError::Empty => Err({
+                PopError::Empty => Err({
                     if !self.cls.load(Ordering::SeqCst) {
                         Error::new(
                             ErrorKind::BrokenPipe,
@@ -296,7 +297,6 @@ impl Read for Consumer {
                         )
                     }
                 }),
-                RbError::Full => unreachable!(),
             }
         }
     }
