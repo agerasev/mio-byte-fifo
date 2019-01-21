@@ -1,6 +1,6 @@
 [package]
 name = "mio-byte-fifo"
-version = "0.1.2"
+version = "0.1.3"
 authors = ["Alexey Gerasev <alexey.gerasev@gmail.com>"]
 edition = "2018"
 description = "Concurrent non-blocking byte SPSC FIFO buffer intended for use in Mio poll"
@@ -14,4 +14,4 @@ license = "MIT/Apache-2.0"
 
 [dependencies]
 mio = "0.6"
-ringbuf = "0.1"
+ringbuf = "0.1.4"

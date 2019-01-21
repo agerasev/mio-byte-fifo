@@ -157,9 +157,15 @@ use mio::{Evented, Poll, Token, Ready, PollOpt, Registration, SetReadiness};
 use ringbuf::{
     RingBuffer,
     Producer as RbProducer, Consumer as RbConsumer,
-    PushError, PopError
+    PushSliceError, PopSliceError,
+    WriteIntoError, ReadFromError,
 };
 
+#[derive(Debug)]
+pub enum TransmitError {
+    This(Error),
+    Other(Error),
+}
 
 pub struct Producer {
     reg: Registration,
@@ -256,7 +262,7 @@ impl Write for Producer {
                 }.and(Ok(num))
             },
             Err(err) => match err {
-                PushError::Full => Err(Error::new(
+                PushSliceError::Full => Err(Error::new(
                     ErrorKind::WouldBlock,
                     "Ring buffer is full",
                 )),
@@ -267,7 +273,6 @@ impl Write for Producer {
     fn flush(&mut self) -> Result<(), Error> {
         Ok(())
     }
-
 }
 
 impl Read for Consumer {
@@ -284,7 +289,7 @@ impl Read for Consumer {
                 }.and(Ok(num))
             },
             Err(err) => match err {
-                PopError::Empty => Err({
+                PopSliceError::Empty => Err({
                     if !self.cls.load(Ordering::SeqCst) {
                         Error::new(
                             ErrorKind::BrokenPipe,
@@ -298,6 +303,82 @@ impl Read for Consumer {
                     }
                 }),
             }
+        }
+    }
+}
+
+pub trait WriteTransmit {
+    fn write_transmit(&mut self, other: &mut dyn Read, count: Option<usize>)
+    -> Result<usize, TransmitError>;
+}
+
+pub trait ReadTransmit {
+    fn read_transmit(&mut self, other: &mut dyn Write, count: Option<usize>)
+    -> Result<usize, TransmitError>;
+}
+
+impl WriteTransmit for Producer {
+    fn write_transmit(&mut self, other: &mut dyn Read, count: Option<usize>)
+    -> Result<usize, TransmitError> {
+        if !self.cls.load(Ordering::SeqCst) {
+            return Err(TransmitError::This(Error::new(
+                ErrorKind::BrokenPipe, "Consumer was closed",
+            )))
+        }
+
+        let empty = self.rbp.is_empty();
+        match self.rbp.read_from(other, count) {
+            Ok(num) => {
+                if num > 0 && empty {
+                    let res = self.src.set_readiness(Ready::readable());
+                    fence(Ordering::SeqCst);
+                    res
+                } else {
+                    Ok(())
+                }.and(Ok(num)).or_else(|e| {
+                    Err(TransmitError::This(e))
+                })
+            },
+            Err(err) => Err(match err {
+                ReadFromError::Read(e) => TransmitError::Other(e),
+                ReadFromError::RbFull => TransmitError::This(Error::new(
+                    ErrorKind::WouldBlock, "Ring buffer is full",
+                )),
+            }),
+        }
+    }
+}
+
+impl ReadTransmit for Consumer {
+    fn read_transmit(&mut self, other: &mut dyn Write, count: Option<usize>)
+    -> Result<usize, TransmitError> {
+        let full = self.rbc.is_full();
+        match self.rbc.write_into(other, count) {
+            Ok(num) => {
+                if num > 0 && full {
+                    let res = self.srp.set_readiness(Ready::writable());
+                    fence(Ordering::SeqCst);
+                    res
+                } else {
+                    Ok(())
+                }.and(Ok(num)).or_else(|e| {
+                    Err(TransmitError::This(e))
+                })
+            },
+            Err(err) => Err(match err {
+                WriteIntoError::Write(e) => TransmitError::Other(e),
+                WriteIntoError::RbEmpty => TransmitError::This({
+                    if !self.cls.load(Ordering::SeqCst) {
+                        Error::new(
+                            ErrorKind::BrokenPipe, "Producer was closed",
+                        )
+                    } else {
+                        Error::new(
+                            ErrorKind::WouldBlock, "Ring buffer is empty",
+                        )
+                    }
+                }),
+            }),
         }
     }
 }
@@ -560,6 +641,77 @@ mod test {
             Err(err) => {
                 assert_eq!(err.kind(), ErrorKind::WouldBlock);
                 assert_eq!(err.get_ref().unwrap().description(), "Ring buffer is full");
+            }
+        }
+    }
+
+    #[test]
+    fn write_read_transmit() {
+        let (mut p, mut c) = create(16);
+
+        assert_eq!(p.write_transmit(&mut (&b"abcdef"[..]), None).unwrap(), 6);
+
+        let mut buf = vec!();
+        assert_eq!(c.read_transmit(&mut buf, None).unwrap(), 6);
+        assert_eq!(&buf, b"abcdef");
+    }
+
+    #[test]
+    fn write_read_transmit_concat() {
+        let (mut p, mut c) = create(16);
+
+        assert_eq!(p.write_transmit(&mut (&b"abc"[..]), None).unwrap(), 3);
+        assert_eq!(p.write_transmit(&mut (&b"def"[..]), None).unwrap(), 3);
+
+        let mut buf = vec!();
+        assert_eq!(c.read_transmit(&mut buf, None).unwrap(), 6);
+        assert_eq!(&buf, b"abcdef");
+    }
+
+    #[test]
+    fn write_read_transmit_split() {
+        let (mut p, mut c) = create(16);
+
+        assert_eq!(p.write_transmit(&mut (&b"abcdef"[..]), None).unwrap(), 6);
+
+        let mut buf = vec!();
+        assert_eq!(c.read_transmit(&mut buf, Some(3)).unwrap(), 3);
+        assert_eq!(&buf, b"abc");
+        assert_eq!(c.read_transmit(&mut buf, None).unwrap(), 3);
+        assert_eq!(&buf, b"abcdef");
+    }
+
+    #[test]
+    fn read_transmit_block() {
+        let (_p, mut c) = create(16);
+
+        let mut buf = vec!();
+        match c.read_transmit(&mut buf, None) {
+            Ok(_) => panic!(),
+            Err(err) => match err {
+                TransmitError::This(e) => {
+                    assert_eq!(e.kind(), ErrorKind::WouldBlock);
+                    assert_eq!(e.get_ref().unwrap().description(), "Ring buffer is empty");
+                },
+                other => panic!("{:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn write_transmit_block() {
+        const SIZE: usize = 16;
+        let (mut p, _c) = create(SIZE);
+
+        assert_eq!(p.write(&[0; SIZE]).unwrap(), SIZE);
+        match p.write_transmit(&mut (&b"abc"[..]), None) {
+            Ok(_) => panic!(),
+            Err(err) => match err {
+                TransmitError::This(e) => {
+                    assert_eq!(e.kind(), ErrorKind::WouldBlock);
+                    assert_eq!(e.get_ref().unwrap().description(), "Ring buffer is full");
+                },
+                other => panic!("{:?}", other),
             }
         }
     }
